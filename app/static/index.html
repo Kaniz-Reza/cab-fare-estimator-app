@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Boston Cab Fare Estimator</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --text: #1c1f24; --muted: #5f6b7a;
+      --border: #d9dee5; --error: #b42318; --btn: #2563eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14171c; --card: #1d2127; --text: #e8eaed; --muted: #9aa5b1;
+        --border: #343b45; --error: #f97066;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px 16px; display: flex; justify-content: center;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg); color: var(--text);
+    }
+    main { width: 100%; max-width: 480px; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 20px; font-size: 0.9rem; }
+    form, .result {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px;
+    }
+    form { display: grid; gap: 14px; }
+    label { display: grid; gap: 6px; font-size: 0.9rem; font-weight: 600; }
+    select, input {
+      padding: 10px; font-size: 1rem; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    button {
+      padding: 12px; border: 0; border-radius: 8px; cursor: pointer;
+      background: var(--btn); color: #ffffff; font-size: 1rem; font-weight: 600;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .result { margin-top: 16px; text-align: center; }
+    .price { font-size: 2.4rem; font-weight: 700; }
+    .detail { color: var(--muted); margin: 4px 0 0; }
+    .error { color: var(--error); }
+    .hidden { display: none; }
+    .note { color: var(--muted); font-size: 0.8rem; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Boston Cab Fare Estimator</h1>
+    <p class="sub">Estimate an Uber or Lyft fare between two Boston locations.</p>
+
+    <form id="fare-form">
+      <label>From <select id="source" required></select></label>
+      <label>To <select id="destination" required></select></label>
+      <label>Ride type <select id="ride_type" required></select></label>
+      <label>Distance (miles) <input id="distance" type="number" step="any" required></label>
+      <label>Surge multiplier <select id="surge"></select></label>
+      <button type="submit" id="submit">Estimate fare</button>
+    </form>
+
+    <section id="result" class="result hidden" aria-live="polite"></section>
+    <p class="note" id="note"></p>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function addOption(parent, value, label) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      parent.appendChild(opt);
+    }
+
+    function fillSelect(select, values) {
+      select.replaceChildren();
+      for (const v of values) addOption(select, v, v);
+    }
+
+    async function loadOptions() {
+      const [options, health] = await Promise.all([
+        fetch("/options").then((r) => r.json()),
+        fetch("/health").then((r) => r.json()),
+      ]);
+
+      fillSelect($("source"), options.sources);
+      fillSelect($("destination"), options.destinations);
+      $("destination").selectedIndex = 1; // start with two different places
+
+      // Group ride types under Uber / Lyft.
+      const groups = {};
+      for (const [name, company] of Object.entries(options.ride_types)) {
+        (groups[company] ||= []).push(name);
+      }
+      const rideSelect = $("ride_type");
+      rideSelect.replaceChildren();
+      for (const [company, names] of Object.entries(groups)) {
+        const group = document.createElement("optgroup");
+        group.label = company;
+        for (const name of names) addOption(group, name, name);
+        rideSelect.appendChild(group);
+      }
+
+      const surge = $("surge");
+      surge.replaceChildren();
+      for (const v of options.surge_values) {
+        addOption(surge, v, v === 1 ? "1.0 (no surge)" : v + "x");
+      }
+
+      const [low, high] = options.distance_range;
+      $("distance").min = low;
+      $("distance").max = high;
+      $("distance").value = 2;
+
+      $("note").textContent =
+        "Estimate based on Boston Uber/Lyft rides from Nov-Dec 2018. " +
+        "Typical error is about $" + health.model_metrics.rmse.toFixed(2) + ". " +
+        "Distance must be between " + low + " and " + high + " miles.";
+    }
+
+    function showResult(children, isError) {
+      const box = $("result");
+      box.replaceChildren(...children);
+      box.classList.remove("hidden");
+      box.classList.toggle("error", isError);
+    }
+
+    function showError(message) {
+      const p = document.createElement("p");
+      p.textContent = message;
+      showResult([p], true);
+    }
+
+    function showPrice(data) {
+      const price = document.createElement("div");
+      price.className = "price";
+      price.textContent = "$" + data.predicted_price_usd.toFixed(2);
+      const detail = document.createElement("p");
+      detail.className = "detail";
+      detail.textContent = data.cab_type + " \u00b7 " + data.ride_type;
+      showResult([price, detail], false);
+    }
+
+    // The API sends errors in two shapes: a text message (our own checks)
+    // or a list of problems (automatic checks by Pydantic).
+    function readError(data) {
+      if (typeof data.detail === "string") return data.detail;
+      if (Array.isArray(data.detail)) return data.detail.map((d) => d.msg).join(" ");
+      return "Something went wrong.";
+    }
+
+    $("fare-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("submit");
+      button.disabled = true;
+
+      const body = {
+        source: $("source").value,
+        destination: $("destination").value,
+        ride_type: $("ride_type").value,
+        distance: Number($("distance").value),
+        surge_multiplier: Number($("surge").value),
+      };
+
+      try {
+        const response = await fetch("/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (response.ok) showPrice(data);
+        else showError(readError(data));
+      } catch (err) {
+        showError("Could not reach the server. Please try again.");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    loadOptions().catch(() => showError("Could not load the form options."));
+  </script>
+</body>
+</html>
