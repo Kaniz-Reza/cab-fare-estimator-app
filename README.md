@@ -170,10 +170,10 @@ python -m venv .venv
 
 pip install -r requirements.txt
 
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8001
 ```
 
-Then open http://127.0.0.1:8000 for the form, or http://127.0.0.1:8000/docs for the API documentation.
+Then open http://127.0.0.1:8001 for the form, or http://127.0.0.1:8001/docs for the API documentation.
 
 ## Run with Docker
 
